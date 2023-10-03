@@ -37,38 +37,11 @@ const DEFAULT_RUNTIME_STATE: Required<SessionOptions> = {
   status: SessionStatus.IDLE,
 };
 
-/**
- * A wrapper for the Voiceflow runtime client.
- */
 export const useRuntime = ({ url = RUNTIME_URL, versionID, verify, user, ...config }: UseRuntimeProps, dependencies: any[] = []) => {
   const [indicator, setIndicator] = useState(false);
   const [session, setSession, sessionRef] = useStateRef<Required<SessionOptions>>({ ...DEFAULT_RUNTIME_STATE, ...config.session });
   const [lastInteractionAt, setLastInteractionAt] = useState<number | null>(Date.now());
   const [noReplyTimeout, setNoReplyTimeout] = useState<number | null>(null);
-
-  useEffect(() => {
-    let noReplyTimer: NodeJS.Timeout | undefined;
-
-    const checkNoReply = () => {
-      const ready = isStatus(SessionStatus.ACTIVE);
-
-      if (ready && noReplyTimeout && lastInteractionAt) {
-        const timeSinceLastInteraction = Date.now() - lastInteractionAt;
-        if (timeSinceLastInteraction > noReplyTimeout) {
-          // Trigger no reply action
-          interact({ type: ActionType.NO_REPLY, payload: null });
-        }
-      }
-
-      noReplyTimer = setTimeout(checkNoReply, 1000);
-    };
-
-    checkNoReply();
-
-    return () => {
-      clearTimeout(noReplyTimer);
-    };
-  }, [noReplyTimeout, lastInteractionAt]);
 
   const runtime: VoiceflowRuntime<RuntimeContext> = useMemo(
     () =>
@@ -94,119 +67,50 @@ export const useRuntime = ({ url = RUNTIME_URL, versionID, verify, user, ...conf
     dependencies
   );
 
-  const setTurns = (action: (turns: TurnProps[]) => TurnProps[]) => {
-    setSession((prev) => ({ ...prev, turns: action(prev.turns) }));
-  };
-  const setStatus = (status: SessionStatus) => {
-    setSession((prev) => (prev.status === status ? prev : { ...prev, status }));
-  };
-  const isStatus = (status: SessionStatus) => {
-    return sessionRef.current.status === status;
-  };
-
-  const interact = async (action: RuntimeAction): Promise<void> => {
-    setIndicator(true);
-
-    const context = await runtime.interact(createContext(), { sessionID: sessionRef.current.userID, action, ...(versionID && { versionID }) });
-
-    setIndicator(false);
-
-    setTurns((prev) => [
-      ...prev,
-      {
-        id: cuid(),
-        type: TurnType.SYSTEM,
-        timestamp: Date.now(),
-        ...context,
-      },
-    ]);
-
-    config.saveSession?.(sessionRef.current);
-
-    let finishedAnimatingAt = Date.now();
-
-    context.messages.forEach((message) => {
-      finishedAnimatingAt += message.delay ?? 1000;
-    });
-
-    setLastInteractionAt(finishedAnimatingAt);
-  };
-
   const send: SendMessage = async (message, action) => {
     if (sessionRef.current.status === SessionStatus.ENDED) return;
 
-    if (sessionRef.current.turns.length === 1) {
-      // create transcript asynchronously in background
-      const {
-        browser: { name: browser },
-        os: { name: os },
-        platform: { type: device },
-      } = Bowser.parse(window.navigator.userAgent);
-
-      runtime.createTranscript(session.userID, { ...(os && { os }), ...(browser && { browser }), ...(device && { device }), ...(user && { user }) });
-    }
-
     handleActions(action);
 
-    setTurns((prev) => [
-      ...prev,
-      {
-        id: cuid(),
-        type: TurnType.USER,
-        message,
-        timestamp: Date.now(),
-      },
-    ]);
-    await interact(action);
+    // Send the message to your chatbot's API endpoint
+    try {
+        const response = await fetch('https://api.voiceflow.com/runtime/VF.DM.64f62d3999d6da00085ca080.8T5zNZlslJzC4CAA', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ message: message })
+        });
+
+        const data = await response.json();
+        // Handle the chatbot's response here. Depending on the structure of your chatbot's response,
+        // you might need to extract the message and display it in the chat UI.
+        // For example:
+        // const botMessage = data.responseMessage; // Adjust this based on your API's response structure
+        // displayBotMessage(botMessage); // You'll need to implement a function or logic to display the bot's response in the chat UI
+
+    } catch (error) {
+        // Handle any errors, e.g., display an error message in the chat UI
+        console.error("Error sending message to chatbot:", error);
+    }
   };
 
-  const reset = () => setTurns(() => []);
+  const reset = () => setSession(() => []);
 
   const launch = async (): Promise<void> => {
     if (sessionRef.current.turns.length) reset();
 
-    setStatus(SessionStatus.ACTIVE);
-    await interact({ type: ActionType.LAUNCH, payload: null });
+    await send('', { type: ActionType.LAUNCH, payload: null });
   };
 
   const reply = async (message: string): Promise<void> => send(message, { type: ActionType.TEXT, payload: message });
 
-  const feedback = async (name: FeedbackName, lastTurnMessages: MessageProps[], userTurn: UserTurnProps | null): Promise<void> => {
-    const aiMessages: string[] = [];
-
-    lastTurnMessages.forEach((message) => {
-      if (!message.ai) return;
-      if (message.type !== MessageType.TEXT) return;
-      const text = typeof message.text === 'string' ? message.text : serializeToText(message.text);
-
-      aiMessages.push(text);
-    });
-
-    await runtime.feedback({
-      sessionID: sessionRef.current.userID,
-      text: aiMessages,
-      name,
-      last_user_input: userTurn,
-      ...(versionID && { versionID }),
-    });
-  };
-
-  const register = (trace: TraceDeclaration<RuntimeContext, any>) => runtime.registerStep(trace);
-
-  const addTurn = (turn: TurnProps) => setTurns((prev) => [...prev, turn]);
-
   return {
     send,
     reply,
-    register,
     reset,
     launch,
-    interact,
-    feedback,
     indicator,
     session,
-    setStatus,
-    isStatus,
-    addTurn,
   };
 };
